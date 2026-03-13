@@ -1,6 +1,7 @@
 import os
 import subprocess
 import sys
+import tempfile
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
@@ -46,27 +47,33 @@ class InstallResponse(BaseModel):
 @app.post("/execute", response_model=ExecuteResponse)
 async def execute(request: ExecuteRequest) -> ExecuteResponse:
     timeout = request.timeout_seconds or EXECUTE_TIMEOUT_DEFAULT
+    fd, path = tempfile.mkstemp(suffix=".py", text=True)
     try:
-        result = subprocess.run(
-            [sys.executable, "-c", request.code],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        return ExecuteResponse(
-            stdout=result.stdout or "",
-            stderr=result.stderr or "",
-            exit_code=result.returncode,
-            timeout=False,
-        )
-    except subprocess.TimeoutExpired:
-        return ExecuteResponse(
-            stdout="",
-            stderr="",
-            exit_code=-1,
-            timeout=True,
-            error=f"Execution timed out after {timeout}s",
-        )
+        try:
+            os.write(fd, request.code.encode("utf-8"))
+        finally:
+            os.close(fd)
+        try:
+            result = subprocess.run(
+                [sys.executable, path],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            return ExecuteResponse(
+                stdout=result.stdout or "",
+                stderr=result.stderr or "",
+                exit_code=result.returncode,
+                timeout=False,
+            )
+        except subprocess.TimeoutExpired:
+            return ExecuteResponse(
+                stdout="",
+                stderr="",
+                exit_code=-1,
+                timeout=True,
+                error=f"Execution timed out after {timeout}s",
+            )
     except Exception as e:
         return ExecuteResponse(
             stdout="",
@@ -75,6 +82,11 @@ async def execute(request: ExecuteRequest) -> ExecuteResponse:
             timeout=False,
             error=str(e),
         )
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
 
 @app.post("/install", response_model=InstallResponse)
